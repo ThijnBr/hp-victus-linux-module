@@ -1,0 +1,21 @@
+post_install() {
+    dkms add hp-omen-wmi/${pkgver}
+    dkms build hp-omen-wmi/${pkgver}
+    dkms install hp-omen-wmi/${pkgver} --force
+}
+
+pre_upgrade() {
+    local _oldver=$(pacman -Qi ${pkgname} | grep '^Version' | cut -d: -f2 | tr -d ' ')
+    dkms remove hp-omen-wmi/${_oldver} --all
+}
+
+post_upgrade() {
+    dkms add hp-omen-wmi/${pkgver}
+    dkms build hp-omen-wmi/${pkgver}
+    dkms install hp-omen-wmi/${pkgver} --force
+}
+
+pre_remove() {
+    dkms remove hp-omen-wmi/${pkgver} --all
+}
+
