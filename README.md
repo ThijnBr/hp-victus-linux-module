@@ -14,7 +14,7 @@ Currently working:
 ## Requirements (Arch Linux)
 
 - dkms
-- linux-headers for your running kernel (e.g. `linux-headers` matching 6.17.6-arch1-1)
+- linux-headers for your running kernel (e.g. `linux-headers` matching 6.19.6-arch1-1)
 
 ## Installation
 

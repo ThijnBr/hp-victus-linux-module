@@ -1,7 +1,7 @@
 install:
-	dkms install .
+	sudo dkms install .
 
 uninstall:
-	dkms remove hp-omen-wmi/0.10 --all
+	sudo dkms remove hp-omen-wmi/0.6.2 --all
 
 all: install
