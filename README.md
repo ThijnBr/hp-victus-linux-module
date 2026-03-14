@@ -1,9 +1,9 @@
 HP Omen and Victus special feature control for Linux
 ----------------------------------------------------
 
-This repository is a fork of `pelrun/hp-omen-linux-module` adapted to build and run on Arch Linux kernel 6.17.6-arch1-1. Upstream project: [pelrun/hp-omen-linux-module](https://github.com/pelrun/hp-omen-linux-module).
+This repository is a fork of `pelrun/hp-omen-linux-module` adapted to support multiple kernel versions (including legacy and modern platform profile APIs). Upstream project: [pelrun/hp-omen-linux-module](https://github.com/pelrun/hp-omen-linux-module).
 
-It's experimental and could crash your machine.
+It's experimental and could crash your machine. Note: while it has build support for multiple kernels, it is only tested on Arch Linux kernel 6.19.6-arch1-1.
 
 **USE AT YOUR OWN RISK**
 

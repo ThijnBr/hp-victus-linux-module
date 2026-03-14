@@ -17,6 +17,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/kernel.h>
+#include <linux/version.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -246,7 +247,9 @@ static const struct key_entry hp_wmi_keymap[] = {
 
 static struct input_dev *hp_wmi_input_dev;
 static struct platform_device *hp_wmi_platform_dev;
-// static struct platform_profile_handler platform_profile_handler; // removed for kernel 6.17
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
+static struct platform_profile_handler platform_profile_handler;
+#endif
 static bool platform_profile_support;
 static bool zero_insize_support;
 
@@ -1659,6 +1662,7 @@ static int fourzone_setup(struct platform_device *dev)
 	return sysfs_create_group(&dev->dev.kobj, &zone_attribute_group);
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
 static int platform_profile_omen_probe(void *drvdata, unsigned long *choices)
 {
 	set_bit(PLATFORM_PROFILE_COOL, choices);
@@ -1699,12 +1703,15 @@ static const struct platform_profile_ops hp_profile_ops = {
 	.profile_get = hp_wmi_platform_profile_get,
 	.profile_set = hp_wmi_platform_profile_set,
 };
+#endif
 
 static int thermal_profile_setup(void)
 {
 	int err, tp;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
 	const struct platform_profile_ops *ops;
 	struct device *dev = &hp_wmi_platform_dev->dev;
+#endif
 
 	if (is_omen_thermal_profile()) {
 		tp = omen_thermal_profile_get();
@@ -1720,7 +1727,16 @@ static int thermal_profile_setup(void)
 		if (err < 0)
 			return err;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
 		ops = &omen_profile_ops;
+#else
+		set_bit(PLATFORM_PROFILE_COOL, platform_profile_handler.choices);
+		set_bit(PLATFORM_PROFILE_BALANCED, platform_profile_handler.choices);
+		set_bit(PLATFORM_PROFILE_PERFORMANCE, platform_profile_handler.choices);
+
+		platform_profile_handler.profile_get = platform_profile_omen_get;
+		platform_profile_handler.profile_set = platform_profile_omen_set;
+#endif
 	} else {
 		tp = thermal_profile_get();
 
@@ -1735,11 +1751,29 @@ static int thermal_profile_setup(void)
 		if (err)
 			return err;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
 		ops = &hp_profile_ops;
+#else
+		set_bit(PLATFORM_PROFILE_COOL, platform_profile_handler.choices);
+		set_bit(PLATFORM_PROFILE_BALANCED, platform_profile_handler.choices);
+		set_bit(PLATFORM_PROFILE_PERFORMANCE, platform_profile_handler.choices);
+		set_bit(PLATFORM_PROFILE_QUIET, platform_profile_handler.choices);
+
+		platform_profile_handler.profile_get = hp_wmi_platform_profile_get;
+		platform_profile_handler.profile_set = hp_wmi_platform_profile_set;
+#endif
 	}
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
 	if (platform_profile_register(dev, "hp-wmi", NULL, ops) == NULL)
 		return -ENOMEM;
+#else
+	platform_profile_handler.name = "hp-wmi";
+
+	err = platform_profile_register(&platform_profile_handler);
+	if (err)
+		return err;
+#endif
 
 	platform_profile_support = true;
 
@@ -1823,8 +1857,13 @@ static void __exit hp_wmi_bios_remove(struct platform_device *device)
 		rfkill_destroy(wwan_rfkill);
 	}
 
-	if (platform_profile_support)
+	if (platform_profile_support) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
 		platform_profile_remove(&device->dev);
+#else
+		platform_profile_unregister();
+#endif
+	}
 }
 
 static int hp_wmi_resume_handler(struct device *device)

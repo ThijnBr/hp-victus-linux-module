@@ -227,6 +227,7 @@ deps_hp-wmi.o := \
   /usr/lib/modules/6.19.6-arch1-1/build/include/linux/util_macros.h \
     $(wildcard include/config/FOO_SUSPEND) \
   /usr/lib/modules/6.19.6-arch1-1/build/include/linux/wordpart.h \
+  /usr/lib/modules/6.19.6-arch1-1/build/include/generated/uapi/linux/version.h \
   /usr/lib/modules/6.19.6-arch1-1/build/include/linux/module.h \
     $(wildcard include/config/MODULES) \
     $(wildcard include/config/SYSFS) \
