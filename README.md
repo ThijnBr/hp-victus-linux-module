@@ -63,7 +63,17 @@ options hp_wmi single_zone=1
 
 ## Installation & Setup
 
-### 1. Build and install with DKMS
+### Option A: Arch Linux / CachyOS (AUR)
+
+You can install the package directly via your AUR helper:
+
+```bash
+paru -S hp-victus-wmi-dkms-git
+# or
+yay -S hp-victus-wmi-dkms-git
+```
+
+### Option B: Build and install with DKMS manually
 
 To ensure the driver persists across kernel updates:
 

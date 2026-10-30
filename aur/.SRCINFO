@@ -1,0 +1,17 @@
+pkgbase = hp-victus-wmi-dkms-git
+	pkgdesc = DKMS driver module for HP Victus laptops providing keyboard RGB backlight control and OpenRGB integration
+	pkgver = r18.1cc8b2c
+	pkgrel = 1
+	url = https://github.com/ThijnBr/hp-victus-linux-module
+	arch = x86_64
+	license = GPL-2.0-only
+	makedepends = git
+	depends = dkms
+	optdepends = openrgb: for controlling RGB lighting and effects
+	optdepends = python: for the graphical control utility
+	provides = hp-victus-wmi-dkms=r18.1cc8b2c
+	conflicts = hp-victus-wmi-dkms
+	source = git+https://github.com/ThijnBr/hp-victus-linux-module.git
+	sha256sums = SKIP
+
+pkgname = hp-victus-wmi-dkms-git
