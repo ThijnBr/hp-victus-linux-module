@@ -8,25 +8,49 @@ from tkinter import ttk, colorchooser, messagebox
 
 # Path to RGB zones
 RGB_PATH = "/sys/class/leds"
+MASTER_BRIGHTNESS = "/sys/class/leds/hp::kbd_backlight/brightness"
+LIGHTING_CONTROL = "/sys/devices/platform/hp-wmi/rgb_zones/lighting_control_state"
+
+def ensure_backlight_on():
+    """Ensure hardware lighting power and master brightness are enabled."""
+    try:
+        if os.path.exists(LIGHTING_CONTROL):
+            with open(LIGHTING_CONTROL, "r") as f:
+                if f.read().strip() == "0":
+                    with open(LIGHTING_CONTROL, "w") as fw:
+                        fw.write("1\n")
+        if os.path.exists(MASTER_BRIGHTNESS):
+            with open(MASTER_BRIGHTNESS, "r") as f:
+                if f.read().strip() == "0":
+                    with open(MASTER_BRIGHTNESS, "w") as fw:
+                        fw.write("255\n")
+    except Exception:
+        pass
 
 # Detect zones dynamically
 def get_zones():
     zones = []
     for entry in os.listdir(RGB_PATH):
-        if entry.startswith("hp-wmi::zone"):
+        if entry.startswith("hp::kbd_") or entry.startswith("hp-wmi::zone"):
             zones.append(entry)
     zones.sort()
     return zones
 
 # Write RGB value to a specific zone
 def set_zone_rgb(zone, r, g, b):
+    ensure_backlight_on()
+    multi_path = os.path.join(RGB_PATH, zone, "multi_intensity")
     try:
-        with open(os.path.join(RGB_PATH, zone, "red"), "w") as f:
-            f.write(str(r))
-        with open(os.path.join(RGB_PATH, zone, "green"), "w") as f:
-            f.write(str(g))
-        with open(os.path.join(RGB_PATH, zone, "blue"), "w") as f:
-            f.write(str(b))
+        if os.path.exists(multi_path):
+            with open(multi_path, "w") as f:
+                f.write(f"{r} {g} {b}\n")
+        else:
+            with open(os.path.join(RGB_PATH, zone, "red"), "w") as f:
+                f.write(str(r))
+            with open(os.path.join(RGB_PATH, zone, "green"), "w") as f:
+                f.write(str(g))
+            with open(os.path.join(RGB_PATH, zone, "blue"), "w") as f:
+                f.write(str(b))
     except PermissionError:
         messagebox.showerror("Permission Error", "Run this script as root (sudo)!")
     except Exception as e:
@@ -34,7 +58,12 @@ def set_zone_rgb(zone, r, g, b):
 
 # Read current RGB of a zone
 def get_zone_rgb(zone):
+    multi_path = os.path.join(RGB_PATH, zone, "multi_intensity")
     try:
+        if os.path.exists(multi_path):
+            parts = open(multi_path).read().strip().split()
+            if len(parts) >= 3:
+                return (int(parts[0]), int(parts[1]), int(parts[2]))
         r = int(open(os.path.join(RGB_PATH, zone, "red")).read().strip())
         g = int(open(os.path.join(RGB_PATH, zone, "green")).read().strip())
         b = int(open(os.path.join(RGB_PATH, zone, "blue")).read().strip())
