@@ -1,0 +1,50 @@
+# Maintainer: Thijn Broekhuizen <thijnbroekhuizen@hotmail.com>
+pkgname=hp-victus-wmi-dkms-git
+_pkgname=hp-victus-wmi
+pkgver=r18.1cc8b2c
+pkgrel=1
+pkgdesc="DKMS driver module for HP Victus laptops providing keyboard RGB backlight control and OpenRGB integration"
+arch=('x86_64')
+url="https://github.com/ThijnBr/hp-victus-linux-module"
+license=('GPL-2.0-only')
+depends=('dkms')
+makedepends=('git')
+optdepends=(
+    'openrgb: for controlling RGB lighting and effects'
+    'python: for the graphical control utility'
+)
+provides=("hp-victus-wmi-dkms=${pkgver}")
+conflicts=('hp-victus-wmi-dkms')
+source=("git+https://github.com/ThijnBr/hp-victus-linux-module.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd "${srcdir}/hp-victus-linux-module"
+    printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+package() {
+    cd "${srcdir}/hp-victus-linux-module"
+    local install_dir="${pkgdir}/usr/src/${_pkgname}-${pkgver}"
+
+    # Install DKMS source files
+    install -d "${install_dir}/src"
+    install -m644 Makefile "${install_dir}/"
+    install -m644 src/Makefile "${install_dir}/src/"
+    install -m644 src/hp-wmi.c "${install_dir}/src/"
+
+    # Install dkms.conf with updated package version
+    sed "s/PACKAGE_VERSION=\"1.0.0\"/PACKAGE_VERSION=\"${pkgver}\"/" dkms.conf > "${install_dir}/dkms.conf"
+    chmod 644 "${install_dir}/dkms.conf"
+
+    # Install udev rules for unprivileged OpenRGB and user access
+    install -Dm644 openrgb/99-hp-victus-rgb.rules "${pkgdir}/usr/lib/udev/rules.d/99-hp-victus-rgb.rules"
+
+    # Install setup helper and GUI
+    install -Dm755 openrgb/setup-openrgb.sh "${pkgdir}/usr/bin/hp-victus-openrgb-setup"
+    install -Dm755 hp_victus_rgb_gui.py "${pkgdir}/usr/bin/hp-victus-rgb-gui"
+
+    # Install license and docs
+    install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+    install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+}
