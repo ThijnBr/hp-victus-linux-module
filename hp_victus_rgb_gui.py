@@ -29,12 +29,19 @@ def ensure_backlight_on():
 
 # Detect zones dynamically
 def get_zones():
-    zones = []
-    for entry in os.listdir(RGB_PATH):
-        if entry.startswith("hp::kbd_") or entry.startswith("hp-wmi::zone"):
-            zones.append(entry)
-    zones.sort()
-    return zones
+    if not os.path.exists(RGB_PATH):
+        return []
+    zone_entries = [e for e in os.listdir(RGB_PATH) if e.startswith("hp-wmi::zone")]
+    zone_entries.sort()
+    if len(zone_entries) > 1:
+        # Multi-zone mode (e.g. HP Omen 4-zone)
+        return zone_entries
+    elif "hp::kbd_backlight" in os.listdir(RGB_PATH):
+        # Single-zone mode (e.g. HP Victus unified backlight)
+        return ["hp::kbd_backlight"]
+    elif zone_entries:
+        return zone_entries
+    return []
 
 # Write RGB value to a specific zone
 def set_zone_rgb(zone, r, g, b):

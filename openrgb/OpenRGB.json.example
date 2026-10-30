@@ -2,24 +2,8 @@
     "LinuxLEDDevices": {
         "devices": [
             {
-                "name": "HP Victus Keyboard (All Zones)",
+                "name": "HP Victus Keyboard Backlight",
                 "rgb_path": "/sys/class/leds/hp::kbd_backlight/"
-            },
-            {
-                "name": "HP Victus Zone 1 (Left)",
-                "rgb_path": "/sys/class/leds/hp-wmi::zone00/"
-            },
-            {
-                "name": "HP Victus Zone 2 (Center-Left)",
-                "rgb_path": "/sys/class/leds/hp-wmi::zone01/"
-            },
-            {
-                "name": "HP Victus Zone 3 (Center-Right)",
-                "rgb_path": "/sys/class/leds/hp-wmi::zone02/"
-            },
-            {
-                "name": "HP Victus Zone 4 (Right)",
-                "rgb_path": "/sys/class/leds/hp-wmi::zone03/"
             }
         ]
     }
