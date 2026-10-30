@@ -23,12 +23,32 @@ Upstream-oriented Linux kernel platform driver for HP Victus and HP Omen laptops
 
 ## Hardware Support
 
-- **Victus by HP Gaming Laptop 16** (e.g. `16-r0xxx` / motherboard `8BBE`, `16-s1xxx` / `8C9C`, and other 15/16 models)
+- **Victus by HP Gaming Laptop 15 & 16** (e.g. `16-r0xxx` / motherboard `8BBE`, `16-s1xxx` / `8C9C`, and other 15/16 models)
+  - Physically equipped with a **single-zone RGB** backlit keyboard.
+  - Automatically configured with a unified keyboard backlight (`hp::kbd_backlight` and `hp-wmi::zone00`), avoiding non-functioning phantom zones.
 - **HP Omen Series** (Omen 15, 16, 17, and Transcend models)
+  - Equipped with **4-zone RGB** keyboards.
+  - Automatically configured with all 4 independent zones (`hp-wmi::zone00`..`zone03`).
 
-Hardware detection automatically enables keyboard backlight support:
-- Registers `hp::kbd_backlight` as the master keyboard backlight device (integrated with UPower & KDE Plasma brightness slider).
-- Provides individual zone access (`hp-wmi::zone00`..`zone03` / `rgb_zones`) for per-zone color customization and OpenRGB compatibility.
+### Module Parameters
+
+You can inspect or override the zone detection behavior using the `single_zone` parameter:
+
+```bash
+# Force single-zone mode (default for HP Victus)
+sudo modprobe hp_wmi single_zone=1
+
+# Force 4-zone mode (default for HP Omen)
+sudo modprobe hp_wmi single_zone=0
+
+# Auto-detect based on DMI / laptop model (default: single_zone=-1)
+sudo modprobe hp_wmi single_zone=-1
+```
+
+To make an override permanent across reboots, add to `/etc/modprobe.d/hp-wmi.conf`:
+```
+options hp_wmi single_zone=1
+```
 
 ---
 
@@ -129,46 +149,66 @@ sudo ./hp_victus_rgb_gui.py
 
 ## OpenRGB Integration
 
-The module is fully compatible with [OpenRGB](https://openrgb.org) using its native `LinuxLEDController` subsystem. Both master keyboard control (all zones synchronized) and independent 4-zone per-key/zone control are supported without requiring OpenRGB to run as root.
+The module is fully compatible with [OpenRGB](https://openrgb.org) using its native `LinuxLEDController` subsystem. Both single-zone RGB (HP Victus) and 4-zone RGB (HP Omen) configurations are supported without requiring OpenRGB to run as root.
 
 ### 1. Automated OpenRGB Setup
 
 Run the included setup script:
 
 ```bash
+# Auto-detects zones (defaults to single-zone for Victus):
 ./openrgb/setup-openrgb.sh
+
+# Or explicitly force mode:
+./openrgb/setup-openrgb.sh --single-zone   # 1 unified zone
+./openrgb/setup-openrgb.sh --four-zone     # 4 individual zones (HP Omen)
 ```
 
 This script:
-1. Installs the udev rule (`/etc/udev/rules.d/99-hp-victus-rgb.rules`) so normal users have read/write access to the sysfs LED and RGB attributes.
-2. Configures `~/.config/OpenRGB/OpenRGB.json` with the master keyboard backlight device and all 4 individual zones.
+1. Installs the udev rule (`/etc/udev/rules.d/99-hp-victus-rgb.rules`) so normal users have read/write access to the sysfs LED and RGB attributes without sudo.
+2. Configures `~/.config/OpenRGB/OpenRGB.json` with the matching keyboard device(s).
 
 ### 2. Manual Configuration
 
 If configuring manually, add the following to `~/.config/OpenRGB/OpenRGB.json`:
 
+**For Single-Zone Models (HP Victus):**
 ```json
 {
     "LinuxLEDDevices": {
         "devices": [
             {
-                "name": "HP Victus Keyboard (All Zones)",
+                "name": "HP Victus Keyboard Backlight",
+                "rgb_path": "/sys/class/leds/hp::kbd_backlight/"
+            }
+        ]
+    }
+}
+```
+
+**For 4-Zone Models (HP Omen):**
+```json
+{
+    "LinuxLEDDevices": {
+        "devices": [
+            {
+                "name": "HP Omen Keyboard Backlight (All Zones)",
                 "rgb_path": "/sys/class/leds/hp::kbd_backlight/"
             },
             {
-                "name": "HP Victus Zone 1 (Left)",
+                "name": "HP Omen Zone 1 (Left)",
                 "rgb_path": "/sys/class/leds/hp-wmi::zone00/"
             },
             {
-                "name": "HP Victus Zone 2 (Center-Left)",
+                "name": "HP Omen Zone 2 (Center-Left)",
                 "rgb_path": "/sys/class/leds/hp-wmi::zone01/"
             },
             {
-                "name": "HP Victus Zone 3 (Center-Right)",
+                "name": "HP Omen Zone 3 (Center-Right)",
                 "rgb_path": "/sys/class/leds/hp-wmi::zone02/"
             },
             {
-                "name": "HP Victus Zone 4 (Right)",
+                "name": "HP Omen Zone 4 (Right)",
                 "rgb_path": "/sys/class/leds/hp-wmi::zone03/"
             }
         ]
@@ -183,18 +223,18 @@ List detected devices:
 openrgb --noautoconnect -l
 ```
 
-Set color across all zones:
+Set color on HP Victus (single zone):
 ```bash
-openrgb --noautoconnect --device "HP Victus Keyboard (All Zones)" --color 00FFFF
+openrgb --noautoconnect --device "HP Victus Keyboard Backlight" --color 00FFFF
 ```
 
-Set individual zone colors:
+Set color on HP Omen:
 ```bash
 openrgb --noautoconnect \
-  --device "HP Victus Zone 1 (Left)" --color FF0000 \
-  --device "HP Victus Zone 2 (Center-Left)" --color 00FF00 \
-  --device "HP Victus Zone 3 (Center-Right)" --color 0000FF \
-  --device "HP Victus Zone 4 (Right)" --color FFFF00
+  --device "HP Omen Zone 1 (Left)" --color FF0000 \
+  --device "HP Omen Zone 2 (Center-Left)" --color 00FF00 \
+  --device "HP Omen Zone 3 (Center-Right)" --color 0000FF \
+  --device "HP Omen Zone 4 (Right)" --color FFFF00
 ```
 
 

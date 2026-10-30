@@ -37,6 +37,10 @@ MODULE_AUTHOR("Matthew Garrett <mjg59@srcf.ucam.org>");
 MODULE_DESCRIPTION("HP laptop WMI hotkeys driver");
 MODULE_LICENSE("GPL");
 
+static int single_zone = -1;
+module_param(single_zone, int, 0444);
+MODULE_PARM_DESC(single_zone, "Keyboard RGB zone mode: -1 = auto (Victus: single-zone, Omen: 4-zone), 0 = 4-zone, 1 = single-zone");
+
 MODULE_ALIAS("wmi:95F24279-4D7B-4334-9387-ACCDC67EF61C");
 MODULE_ALIAS("wmi:5FB7F034-2C63-45e9-BE91-3D44E2C707E4");
 
@@ -282,18 +286,22 @@ static const char * const tablet_chassis_types[] = {
 /* Determine featureset for specific models */
 struct quirk_entry {
 	bool fourzone;
+	bool single_zone;
 };
 
 static struct quirk_entry temp_omen = {
 	.fourzone = true,
+	.single_zone = false,
 };
 
 static struct quirk_entry temp_victus = {
 	.fourzone = true,
+	.single_zone = true,
 };
 
 static struct quirk_entry temp_default = {
 	.fourzone = false,
+	.single_zone = false,
 };
 
 static struct quirk_entry *quirks = &temp_default;
@@ -1314,6 +1322,7 @@ struct platform_zone {
 static struct device_attribute *zone_dev_attrs;
 static struct attribute **zone_attrs;
 static struct platform_zone *zone_data;
+static int actual_zone_count = FOURZONE_COUNT;
 
 static struct color_platform hp_kbd_base_colors[FOURZONE_COUNT];
 static DEFINE_MUTEX(hp_kbd_lock);
@@ -1354,7 +1363,7 @@ static struct platform_zone *match_zone(struct device_attribute *attr)
 {
 	u8 zone;
 
-	for (zone = 0; zone < FOURZONE_COUNT; zone++) {
+	for (zone = 0; zone < actual_zone_count; zone++) {
 		if ((struct device_attribute *)zone_data[zone].attr == attr) {
 			pr_debug("hp-wmi: matched zone location: %d\n",
 					zone_data[zone].offset);
@@ -1390,6 +1399,17 @@ static int fourzone_update_led(struct platform_zone *zone, enum hp_wmi_command r
 		mutex_lock(&hp_kbd_lock);
 		if (idx >= 0 && idx < FOURZONE_COUNT)
 			hp_kbd_base_colors[idx] = zone->colors;
+
+		if (actual_zone_count == 1) {
+			int z;
+			for (z = 1; z < FOURZONE_COUNT; z++) {
+				u8 off = 25 + (z * 3);
+				state[off + 0] = zone->colors.red;
+				state[off + 1] = zone->colors.green;
+				state[off + 2] = zone->colors.blue;
+				hp_kbd_base_colors[z] = zone->colors;
+			}
+		}
 
 		ret = hp_wmi_perform_query(HPWMI_FOURZONE_COLOR_SET, HPWMI_FOURZONE, &state,
 				sizeof(state), sizeof(state));
@@ -1484,6 +1504,11 @@ static int hp_wmi_led_brightness_set_blocking(struct led_classdev *led_cdev,
 	if (idx >= 0 && idx < FOURZONE_COUNT) {
 		mutex_lock(&hp_kbd_lock);
 		hp_kbd_base_colors[idx] = colors;
+		if (actual_zone_count == 1) {
+			int z;
+			for (z = 1; z < FOURZONE_COUNT; z++)
+				hp_kbd_base_colors[z] = colors;
+		}
 		mutex_unlock(&hp_kbd_lock);
 	}
 
@@ -1673,7 +1698,7 @@ static int hp_wmi_kbd_brightness_set(struct led_classdev *led_cdev,
 			state[off + 1] = (u8)(((u32)hp_kbd_base_colors[i].green * brightness) / 255);
 			state[off + 2] = (u8)(((u32)hp_kbd_base_colors[i].blue * brightness) / 255);
 		}
-		if (zone_data) {
+		if (zone_data && i < actual_zone_count) {
 			zone_data[i].colors.red = state[off + 0];
 			zone_data[i].colors.green = state[off + 1];
 			zone_data[i].colors.blue = state[off + 2];
@@ -1743,7 +1768,7 @@ static ssize_t hp_kbd_multi_intensity_store(struct device *dev,
 		state[off + 1] = (u8)g;
 		state[off + 2] = (u8)b;
 
-		if (zone_data) {
+		if (zone_data && i < actual_zone_count) {
 			zone_data[i].colors.red = (u8)r;
 			zone_data[i].colors.green = (u8)g;
 			zone_data[i].colors.blue = (u8)b;
@@ -1879,6 +1904,14 @@ static ssize_t hp_wmi_zone_multi_intensity_store(struct device *dev,
 		hp_kbd_base_colors[idx].red = (u8)r;
 		hp_kbd_base_colors[idx].green = (u8)g;
 		hp_kbd_base_colors[idx].blue = (u8)b;
+		if (actual_zone_count == 1) {
+			int z;
+			for (z = 1; z < FOURZONE_COUNT; z++) {
+				hp_kbd_base_colors[z].red = (u8)r;
+				hp_kbd_base_colors[z].green = (u8)g;
+				hp_kbd_base_colors[z].blue = (u8)b;
+			}
+		}
 	}
 
 	ret = fourzone_update_led(zone, HPWMI_WRITE);
@@ -1903,41 +1936,76 @@ static int fourzone_setup(struct platform_device *dev)
 	if (!quirks->fourzone)
 		return 0;
 
-	// global_led.max_brightness = 0x0F;
-	// global_brightness = global_led.max_brightness;
+	if (single_zone == 1)
+		actual_zone_count = 1;
+	else if (single_zone == 0)
+		actual_zone_count = FOURZONE_COUNT;
+	else
+		actual_zone_count = quirks->single_zone ? 1 : FOURZONE_COUNT;
 
-	/*
-	 *      - zone_dev_attrs num_zones + 1 is for individual zones and then
-	 *        null terminated
-	 *      - zone_attrs num_zones + 2 is for all attrs in zone_dev_attrs +
-	 *        the lighting control + null terminated
-	 *      - zone_data num_zones is for the distinct zones
-	 */
+	pr_info("hp-wmi: initializing %d keyboard RGB zone(s) (%s mode)\n",
+		actual_zone_count,
+		actual_zone_count == 1 ? "single-zone" : "4-zone");
 
 	zone_dev_attrs =
-		kcalloc(FOURZONE_COUNT + 1, sizeof(struct device_attribute),
+		kcalloc(actual_zone_count + 1, sizeof(struct device_attribute),
 		GFP_KERNEL);
 	if (!zone_dev_attrs)
 		return -ENOMEM;
 
 	zone_attrs =
-		kcalloc(FOURZONE_COUNT + 2, sizeof(struct attribute *),
+		kcalloc(actual_zone_count + 2, sizeof(struct attribute *),
 		GFP_KERNEL);
-	if (!zone_attrs)
+	if (!zone_attrs) {
+		kfree(zone_dev_attrs);
+		zone_dev_attrs = NULL;
 		return -ENOMEM;
+	}
 
 	zone_data =
-		kcalloc(FOURZONE_COUNT, sizeof(struct platform_zone),
+		kcalloc(actual_zone_count, sizeof(struct platform_zone),
 		GFP_KERNEL);
-
-	if (!zone_data)
+	if (!zone_data) {
+		kfree(zone_attrs);
+		zone_attrs = NULL;
+		kfree(zone_dev_attrs);
+		zone_dev_attrs = NULL;
 		return -ENOMEM;
+	}
 
-	for (zone = 0; zone < FOURZONE_COUNT; zone++) {
+	for (zone = 0; zone < actual_zone_count; zone++) {
 		sprintf(buffer, "zone%02hhX", zone);
 		name = kstrdup(buffer, GFP_KERNEL);
-		if (name == NULL)
-			return 1;
+		if (name == NULL) {
+			while (zone > 0) {
+				zone--;
+				if (zone_data[zone].led_registered) {
+					if (zone_data[zone].led_cdev.dev) {
+						device_remove_file(zone_data[zone].led_cdev.dev, &zone_data[zone].led_red_attr);
+						device_remove_file(zone_data[zone].led_cdev.dev, &zone_data[zone].led_green_attr);
+						device_remove_file(zone_data[zone].led_cdev.dev, &zone_data[zone].led_blue_attr);
+						device_remove_file(zone_data[zone].led_cdev.dev, &zone_data[zone].led_multi_intensity_attr);
+					}
+					led_classdev_unregister(&zone_data[zone].led_cdev);
+					zone_data[zone].led_registered = false;
+				}
+				if (zone_data[zone].led_cdev.name) {
+					kfree(zone_data[zone].led_cdev.name);
+					zone_data[zone].led_cdev.name = NULL;
+				}
+				if (zone_dev_attrs[zone].attr.name) {
+					kfree(zone_dev_attrs[zone].attr.name);
+					zone_dev_attrs[zone].attr.name = NULL;
+				}
+			}
+			kfree(zone_data);
+			zone_data = NULL;
+			kfree(zone_attrs);
+			zone_attrs = NULL;
+			kfree(zone_dev_attrs);
+			zone_dev_attrs = NULL;
+			return -ENOMEM;
+		}
 
 		sysfs_attr_init(&zone_dev_attrs[zone].attr);
 		zone_dev_attrs[zone].attr.name = name;
@@ -1969,7 +2037,17 @@ static int fourzone_setup(struct platform_device *dev)
 					kfree(zone_data[zone].led_cdev.name);
 					zone_data[zone].led_cdev.name = NULL;
 				}
+				if (zone_dev_attrs[zone].attr.name) {
+					kfree(zone_dev_attrs[zone].attr.name);
+					zone_dev_attrs[zone].attr.name = NULL;
+				}
 			}
+			kfree(zone_data);
+			zone_data = NULL;
+			kfree(zone_attrs);
+			zone_attrs = NULL;
+			kfree(zone_dev_attrs);
+			zone_dev_attrs = NULL;
 			return -ENOMEM;
 		}
 		zone_data[zone].led_cdev.brightness_set_blocking = hp_wmi_led_brightness_set_blocking;
@@ -2015,7 +2093,8 @@ static int fourzone_setup(struct platform_device *dev)
 			zone_data[zone].led_cdev.name = NULL;
 		}
 	}
-	zone_attrs[FOURZONE_COUNT] = &dev_attr_lighting_control_state.attr;
+	zone_attrs[actual_zone_count] = &dev_attr_lighting_control_state.attr;
+	zone_attrs[actual_zone_count + 1] = NULL;
 	zone_attribute_group.attrs = zone_attrs;
 
 	/* Register master keyboard backlight device for KDE / UPower integration */
@@ -2219,9 +2298,11 @@ static void __exit hp_wmi_bios_remove(struct platform_device *device)
 	int i;
 	u8 zone;
 
-	/* Unregister LED class devices */
+	/* Unregister LED class devices and sysfs group */
 	if (zone_data && quirks && quirks->fourzone) {
-		for (zone = 0; zone < FOURZONE_COUNT; zone++) {
+		sysfs_remove_group(&device->dev.kobj, &zone_attribute_group);
+
+		for (zone = 0; zone < actual_zone_count; zone++) {
 			if (zone_data[zone].led_registered) {
 				/* Remove RGB color attributes */
 				if (zone_data[zone].led_cdev.dev) {
@@ -2237,7 +2318,17 @@ static void __exit hp_wmi_bios_remove(struct platform_device *device)
 				kfree(zone_data[zone].led_cdev.name);
 				zone_data[zone].led_cdev.name = NULL;
 			}
+			if (zone_dev_attrs && zone_dev_attrs[zone].attr.name) {
+				kfree(zone_dev_attrs[zone].attr.name);
+				zone_dev_attrs[zone].attr.name = NULL;
+			}
 		}
+		kfree(zone_data);
+		zone_data = NULL;
+		kfree(zone_attrs);
+		zone_attrs = NULL;
+		kfree(zone_dev_attrs);
+		zone_dev_attrs = NULL;
 	}
 
 	if (hp_kbd_led_registered) {
@@ -2474,13 +2565,13 @@ static int __init hp_wmi_detect_quirks(void)
 			is_victus = true;
 	}
 
-	/* Enable fourzone RGB support for Omen and Victus models */
+	/* Enable RGB support for Omen and Victus models */
 	if (is_omen) {
 		quirks = &temp_omen;
-		pr_info("Detected HP Omen laptop, enabling fourzone RGB support\n");
+		pr_info("Detected HP Omen laptop, enabling 4-zone RGB support\n");
 	} else if (is_victus) {
 		quirks = &temp_victus;
-		pr_info("Detected HP Victus laptop, enabling fourzone RGB support\n");
+		pr_info("Detected HP Victus laptop, enabling single-zone RGB support\n");
 	}
 
 	return 0;
@@ -2488,7 +2579,7 @@ static int __init hp_wmi_detect_quirks(void)
 
 static void hp_wmi_try_fourzone_detection(void)
 {
-	/* Try to detect if fourzone commands are supported for unknown HP models */
+	/* Try to detect if keyboard RGB commands are supported for unknown HP models */
 	if (quirks == &temp_default) {
 		u8 test_state[128];
 		int ret = hp_wmi_perform_query(HPWMI_FOURZONE_COLOR_GET,
@@ -2496,7 +2587,7 @@ static void hp_wmi_try_fourzone_detection(void)
 				sizeof(test_state));
 		if (!ret) {
 			quirks = &temp_victus;
-			pr_info("Fourzone RGB commands supported, enabling RGB support\n");
+			pr_info("Keyboard RGB commands supported, enabling single-zone RGB support\n");
 		}
 	}
 }

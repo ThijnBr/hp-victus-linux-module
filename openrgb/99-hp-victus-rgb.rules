@@ -5,4 +5,4 @@ SUBSYSTEM=="leds", KERNEL=="hp-wmi::zone*", TAG+="uaccess"
 # Ensure write permissions on sysfs attributes for users
 ACTION=="add|change", SUBSYSTEM=="leds", KERNEL=="hp::kbd_backlight", RUN+="/bin/sh -c 'chmod 0666 /sys/class/leds/hp::kbd_backlight/brightness /sys/class/leds/hp::kbd_backlight/multi_intensity 2>/dev/null || true'"
 ACTION=="add|change", SUBSYSTEM=="leds", KERNEL=="hp-wmi::zone*", RUN+="/bin/sh -c 'chmod 0666 /sys/class/leds/%k/brightness /sys/class/leds/%k/multi_intensity /sys/class/leds/%k/red /sys/class/leds/%k/green /sys/class/leds/%k/blue 2>/dev/null || true'"
-ACTION=="add|change", SUBSYSTEM=="platform", KERNEL=="hp-wmi", RUN+="/bin/sh -c 'chmod -R 0666 /sys/devices/platform/hp-wmi/rgb_zones/* /sys/devices/platform/hp-wmi/rgb_zones 2>/dev/null || true'"
+ACTION=="add|change", SUBSYSTEM=="platform", KERNEL=="hp-wmi", RUN+="/bin/sh -c 'chmod 0755 /sys/devices/platform/hp-wmi/rgb_zones 2>/dev/null; chmod 0666 /sys/devices/platform/hp-wmi/rgb_zones/* 2>/dev/null || true'"
