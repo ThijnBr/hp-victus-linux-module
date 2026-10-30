@@ -298,6 +298,13 @@ static struct quirk_entry temp_default = {
 
 static struct quirk_entry *quirks = &temp_default;
 
+static struct led_classdev hp_kbd_led;
+static bool hp_kbd_led_registered;
+static enum led_brightness hp_wmi_kbd_brightness_get(struct led_classdev *led_cdev);
+static int hp_wmi_fourzone_brightness_get(void);
+static int hp_wmi_fourzone_brightness_set(int enable);
+static enum led_brightness __hp_wmi_kbd_brightness_get(void);
+
 /* map output size to the corresponding WMI method id */
 static inline int encode_outsize_for_pvsz(int outsize)
 {
@@ -893,6 +900,10 @@ event_id_switch:
 	case HPWMI_PROXIMITY_SENSOR:
 		break;
 	case HPWMI_BACKLIT_KB_BRIGHTNESS:
+		if (hp_kbd_led_registered) {
+			enum led_brightness b = hp_wmi_kbd_brightness_get(&hp_kbd_led);
+			led_classdev_notify_brightness_hw_changed(&hp_kbd_led, b);
+		}
 		break;
 	case HPWMI_PEAKSHIFT_PERIOD:
 		break;
@@ -1303,6 +1314,9 @@ static struct device_attribute *zone_dev_attrs;
 static struct attribute **zone_attrs;
 static struct platform_zone *zone_data;
 
+static struct color_platform hp_kbd_base_colors[FOURZONE_COUNT];
+static DEFINE_MUTEX(hp_kbd_lock);
+
 static struct attribute_group zone_attribute_group = {
 	.name = "rgb_zones",
 };
@@ -1365,16 +1379,29 @@ static int fourzone_update_led(struct platform_zone *zone, enum hp_wmi_command r
 	}
 
 	if (read_or_write == HPWMI_WRITE) {
+		int idx = (zone->offset - 25) / 3;
+
 		// Zones start at offset 25. Wonder what's in the rest of the buffer?
 		state[zone->offset + 0] = zone->colors.red;
 		state[zone->offset + 1] = zone->colors.green;
 		state[zone->offset + 2] = zone->colors.blue;
 
+		mutex_lock(&hp_kbd_lock);
+		if (idx >= 0 && idx < FOURZONE_COUNT)
+			hp_kbd_base_colors[idx] = zone->colors;
+
 		ret = hp_wmi_perform_query(HPWMI_FOURZONE_COLOR_SET, HPWMI_FOURZONE, &state,
 				sizeof(state), sizeof(state));
+		if (!ret && (zone->colors.red || zone->colors.green || zone->colors.blue))
+			hp_wmi_fourzone_brightness_set(1);
+		mutex_unlock(&hp_kbd_lock);
 
-		if (ret)
+		if (ret) {
 			pr_warn("fourzone_color_set returned error 0x%x\n", ret);
+		} else if (hp_kbd_led_registered) {
+			enum led_brightness b = hp_wmi_kbd_brightness_get(&hp_kbd_led);
+			led_classdev_notify_brightness_hw_changed(&hp_kbd_led, b);
+		}
 
 		return ret;
 	} else {
@@ -1426,17 +1453,17 @@ static ssize_t zone_set(struct device *dev, struct device_attribute *attr,
 }
 
 /* LED class device functions for OpenRGB compatibility */
-static void hp_wmi_led_brightness_set(struct led_classdev *led_cdev,
-				      enum led_brightness brightness)
+static int hp_wmi_led_brightness_set_blocking(struct led_classdev *led_cdev,
+					      enum led_brightness brightness)
 {
 	struct platform_zone *zone;
 	struct color_platform colors;
-	int ret;
+	int ret, idx;
 
 	zone = container_of(led_cdev, struct platform_zone, led_cdev);
 	if (!zone) {
 		pr_err("hp-wmi: invalid zone pointer in brightness_set\n");
-		return;
+		return -EINVAL;
 	}
 
 	/* Convert brightness (0-255) to RGB */
@@ -1452,10 +1479,19 @@ static void hp_wmi_led_brightness_set(struct led_classdev *led_cdev,
 	}
 
 	zone->colors = colors;
+	idx = (zone->offset - 25) / 3;
+	if (idx >= 0 && idx < FOURZONE_COUNT) {
+		mutex_lock(&hp_kbd_lock);
+		hp_kbd_base_colors[idx] = colors;
+		mutex_unlock(&hp_kbd_lock);
+	}
+
 	ret = fourzone_update_led(zone, HPWMI_WRITE);
 	if (ret) {
 		pr_warn("hp-wmi: failed to set LED brightness for zone: %d\n", ret);
+		return ret;
 	}
+	return 0;
 }
 
 static enum led_brightness hp_wmi_led_brightness_get(struct led_classdev *led_cdev)
@@ -1470,6 +1506,253 @@ static enum led_brightness hp_wmi_led_brightness_get(struct led_classdev *led_cd
 	/* Return average of RGB as brightness */
 	return (zone->colors.red + zone->colors.green + zone->colors.blue) / 3;
 }
+
+static int hp_wmi_fourzone_brightness_get(void)
+{
+	u8 state[4] = { 0 };
+	int ret = hp_wmi_perform_query(HPWMI_FOURZONE_BRIGHT_GET, HPWMI_FOURZONE,
+				       state, sizeof(state), sizeof(state));
+	pr_debug("hp_wmi: fourzone_brightness_get ret=%d state=[0x%02x, 0x%02x, 0x%02x, 0x%02x]\n",
+		ret, state[0], state[1], state[2], state[3]);
+	if (ret)
+		return ret < 0 ? ret : -EINVAL;
+	return (state[0] & 0x80) ? 1 : 0;
+}
+
+static int hp_wmi_fourzone_brightness_set(int enable)
+{
+	u8 state[4] = { enable ? 0x80 : 0x00, 0, 0, 0 };
+	int ret = hp_wmi_perform_query(HPWMI_FOURZONE_BRIGHT_SET, HPWMI_FOURZONE,
+				       state, sizeof(state), 0);
+	pr_debug("hp_wmi: fourzone_brightness_set enable=%d ret=%d\n", enable, ret);
+	return ret;
+}
+
+static ssize_t lighting_control_state_show(struct device *dev,
+					   struct device_attribute *attr, char *buf)
+{
+	int ret = hp_wmi_fourzone_brightness_get();
+	if (ret < 0)
+		return ret;
+	return sprintf(buf, "%d\n", ret);
+}
+
+static ssize_t lighting_control_state_store(struct device *dev,
+					    struct device_attribute *attr,
+					    const char *buf, size_t count)
+{
+	int val, ret;
+	if (kstrtoint(buf, 10, &val))
+		return -EINVAL;
+
+	ret = hp_wmi_fourzone_brightness_set(val ? 1 : 0);
+	if (ret)
+		return ret < 0 ? ret : -EINVAL;
+
+	if (hp_kbd_led_registered) {
+		enum led_brightness b = val ? __hp_wmi_kbd_brightness_get() : 0;
+		if (val && b == 0)
+			b = 255;
+		led_classdev_notify_brightness_hw_changed(&hp_kbd_led, b);
+	}
+
+	return count;
+}
+static DEVICE_ATTR_RW(lighting_control_state);
+
+static enum led_brightness __hp_wmi_kbd_brightness_get(void)
+{
+	u8 state[128];
+	int ret, i;
+	u8 max_val = 0;
+
+	ret = hp_wmi_perform_query(HPWMI_FOURZONE_COLOR_GET, HPWMI_FOURZONE, &state,
+				   sizeof(state), sizeof(state));
+	if (ret)
+		return 0;
+
+	for (i = 0; i < FOURZONE_COUNT; i++) {
+		u8 off = 25 + (i * 3);
+		if (state[off + 0] > max_val)
+			max_val = state[off + 0];
+		if (state[off + 1] > max_val)
+			max_val = state[off + 1];
+		if (state[off + 2] > max_val)
+			max_val = state[off + 2];
+	}
+
+	return max_val;
+}
+
+static enum led_brightness hp_wmi_kbd_brightness_get(struct led_classdev *led_cdev)
+{
+	int pwr;
+	enum led_brightness b;
+
+	pwr = hp_wmi_fourzone_brightness_get();
+	if (pwr <= 0)
+		return 0;
+
+	mutex_lock(&hp_kbd_lock);
+	b = __hp_wmi_kbd_brightness_get();
+	mutex_unlock(&hp_kbd_lock);
+	return b;
+}
+
+static int hp_wmi_kbd_brightness_set(struct led_classdev *led_cdev,
+				     enum led_brightness brightness)
+{
+	u8 state[128];
+	int ret, i;
+	bool has_base = false;
+
+	mutex_lock(&hp_kbd_lock);
+
+	ret = hp_wmi_perform_query(HPWMI_FOURZONE_COLOR_GET, HPWMI_FOURZONE, &state,
+				   sizeof(state), sizeof(state));
+	if (ret) {
+		mutex_unlock(&hp_kbd_lock);
+		return ret <= 0 ? ret : -EINVAL;
+	}
+
+	/* Check if any base colors are non-zero */
+	for (i = 0; i < FOURZONE_COUNT; i++) {
+		if (hp_kbd_base_colors[i].red ||
+		    hp_kbd_base_colors[i].green ||
+		    hp_kbd_base_colors[i].blue) {
+			has_base = true;
+			break;
+		}
+	}
+
+	/* If no base colors saved, read current state or default to white */
+	if (!has_base) {
+		for (i = 0; i < FOURZONE_COUNT; i++) {
+			u8 off = 25 + (i * 3);
+			hp_kbd_base_colors[i].red = state[off + 0];
+			hp_kbd_base_colors[i].green = state[off + 1];
+			hp_kbd_base_colors[i].blue = state[off + 2];
+			if (hp_kbd_base_colors[i].red ||
+			    hp_kbd_base_colors[i].green ||
+			    hp_kbd_base_colors[i].blue)
+				has_base = true;
+		}
+	}
+
+	if (!has_base) {
+		for (i = 0; i < FOURZONE_COUNT; i++) {
+			hp_kbd_base_colors[i].red = 255;
+			hp_kbd_base_colors[i].green = 255;
+			hp_kbd_base_colors[i].blue = 255;
+		}
+	}
+
+	for (i = 0; i < FOURZONE_COUNT; i++) {
+		u8 off = 25 + (i * 3);
+		if (brightness == 0) {
+			state[off + 0] = 0;
+			state[off + 1] = 0;
+			state[off + 2] = 0;
+		} else {
+			state[off + 0] = (u8)(((u32)hp_kbd_base_colors[i].red * brightness) / 255);
+			state[off + 1] = (u8)(((u32)hp_kbd_base_colors[i].green * brightness) / 255);
+			state[off + 2] = (u8)(((u32)hp_kbd_base_colors[i].blue * brightness) / 255);
+		}
+		if (zone_data) {
+			zone_data[i].colors.red = state[off + 0];
+			zone_data[i].colors.green = state[off + 1];
+			zone_data[i].colors.blue = state[off + 2];
+		}
+	}
+
+	ret = hp_wmi_perform_query(HPWMI_FOURZONE_COLOR_SET, HPWMI_FOURZONE, &state,
+				   sizeof(state), sizeof(state));
+
+	if (!ret)
+		hp_wmi_fourzone_brightness_set(brightness ? 1 : 0);
+
+	mutex_unlock(&hp_kbd_lock);
+	return ret;
+}
+
+static ssize_t hp_kbd_multi_intensity_show(struct device *dev,
+					   struct device_attribute *attr, char *buf)
+{
+	u8 r = 0, g = 0, b = 0;
+	int i;
+
+	mutex_lock(&hp_kbd_lock);
+	for (i = 0; i < FOURZONE_COUNT; i++) {
+		if (hp_kbd_base_colors[i].red > r)
+			r = hp_kbd_base_colors[i].red;
+		if (hp_kbd_base_colors[i].green > g)
+			g = hp_kbd_base_colors[i].green;
+		if (hp_kbd_base_colors[i].blue > b)
+			b = hp_kbd_base_colors[i].blue;
+	}
+	mutex_unlock(&hp_kbd_lock);
+
+	return sprintf(buf, "%d %d %d\n", r, g, b);
+}
+
+static ssize_t hp_kbd_multi_intensity_store(struct device *dev,
+					    struct device_attribute *attr,
+					    const char *buf, size_t count)
+{
+	unsigned int r, g, b;
+	int i, ret;
+	u8 state[128];
+
+	if (sscanf(buf, "%u %u %u", &r, &g, &b) != 3 &&
+	    sscanf(buf, "%u,%u,%u", &r, &g, &b) != 3)
+		return -EINVAL;
+
+	if (r > 255 || g > 255 || b > 255)
+		return -EINVAL;
+
+	mutex_lock(&hp_kbd_lock);
+	ret = hp_wmi_perform_query(HPWMI_FOURZONE_COLOR_GET, HPWMI_FOURZONE, &state,
+				   sizeof(state), sizeof(state));
+	if (ret) {
+		mutex_unlock(&hp_kbd_lock);
+		return ret <= 0 ? ret : -EINVAL;
+	}
+
+	for (i = 0; i < FOURZONE_COUNT; i++) {
+		u8 off = 25 + (i * 3);
+		hp_kbd_base_colors[i].red = (u8)r;
+		hp_kbd_base_colors[i].green = (u8)g;
+		hp_kbd_base_colors[i].blue = (u8)b;
+
+		state[off + 0] = (u8)r;
+		state[off + 1] = (u8)g;
+		state[off + 2] = (u8)b;
+
+		if (zone_data) {
+			zone_data[i].colors.red = (u8)r;
+			zone_data[i].colors.green = (u8)g;
+			zone_data[i].colors.blue = (u8)b;
+		}
+	}
+
+	ret = hp_wmi_perform_query(HPWMI_FOURZONE_COLOR_SET, HPWMI_FOURZONE, &state,
+				   sizeof(state), sizeof(state));
+	if (!ret)
+		hp_wmi_fourzone_brightness_set((r || g || b) ? 1 : 0);
+	mutex_unlock(&hp_kbd_lock);
+
+	if (ret)
+		return ret;
+
+	if (hp_kbd_led_registered) {
+		enum led_brightness brightness = max(r, max(g, b));
+		led_classdev_notify_brightness_hw_changed(&hp_kbd_led, brightness);
+	}
+
+	return count;
+}
+static struct device_attribute dev_attr_kbd_multi_intensity =
+	__ATTR(multi_intensity, 0644, hp_kbd_multi_intensity_show, hp_kbd_multi_intensity_store);
 
 /* RGB color attribute functions for OpenRGB */
 static ssize_t hp_wmi_led_red_show(struct device *dev, struct device_attribute *attr, char *buf)
@@ -1553,6 +1836,11 @@ static int fourzone_setup(struct platform_device *dev)
 	char buffer[10];
 	char led_buffer[20];  /* Separate buffer for LED names */
 	char *name;
+	u8 cap[4] = {0};
+	int cap_ret = hp_wmi_perform_query(1, HPWMI_FOURZONE, cap, sizeof(cap), sizeof(cap));
+
+	pr_debug("hp_wmi: fourzone capability query 1 returned ret=%d cap=[0x%02x, 0x%02x, 0x%02x, 0x%02x]\n",
+		cap_ret, cap[0], cap[1], cap[2], cap[3]);
 
 	if (!quirks->fourzone)
 		return 0;
@@ -1575,7 +1863,7 @@ static int fourzone_setup(struct platform_device *dev)
 		return -ENOMEM;
 
 	zone_attrs =
-		kcalloc(FOURZONE_COUNT + 1 /* 2 */, sizeof(struct attribute *),
+		kcalloc(FOURZONE_COUNT + 2, sizeof(struct attribute *),
 		GFP_KERNEL);
 	if (!zone_attrs)
 		return -ENOMEM;
@@ -1620,10 +1908,10 @@ static int fourzone_setup(struct platform_device *dev)
 			}
 			return -ENOMEM;
 		}
-		zone_data[zone].led_cdev.brightness_set = hp_wmi_led_brightness_set;
+		zone_data[zone].led_cdev.brightness_set_blocking = hp_wmi_led_brightness_set_blocking;
 		zone_data[zone].led_cdev.brightness_get = hp_wmi_led_brightness_get;
 		zone_data[zone].led_cdev.max_brightness = 255;
-		zone_data[zone].led_cdev.flags = 0;  /* Don't set LED_BRIGHT_HW_CHANGED - it prevents writes */
+		zone_data[zone].led_cdev.flags = 0;
 		zone_data[zone].led_registered = false;
 
 		if (led_classdev_register(&dev->dev, &zone_data[zone].led_cdev) == 0) {
@@ -1656,8 +1944,49 @@ static int fourzone_setup(struct platform_device *dev)
 			zone_data[zone].led_cdev.name = NULL;
 		}
 	}
-	// zone_attrs[FOURZONE_COUNT] = &dev_attr_lighting_control_state.attr;
+	zone_attrs[FOURZONE_COUNT] = &dev_attr_lighting_control_state.attr;
 	zone_attribute_group.attrs = zone_attrs;
+
+	/* Register master keyboard backlight device for KDE / UPower integration */
+	hp_kbd_led.name = "hp::kbd_backlight";
+	hp_kbd_led.brightness_set_blocking = hp_wmi_kbd_brightness_set;
+	hp_kbd_led.brightness_get = hp_wmi_kbd_brightness_get;
+	hp_kbd_led.max_brightness = 255;
+	hp_kbd_led.flags = LED_BRIGHT_HW_CHANGED;
+
+	/* Pre-populate base colors from current hardware state */
+	{
+		u8 state[128];
+		bool non_zero = false;
+		int ret = hp_wmi_perform_query(HPWMI_FOURZONE_COLOR_GET, HPWMI_FOURZONE, &state,
+					       sizeof(state), sizeof(state));
+		if (!ret) {
+			for (zone = 0; zone < FOURZONE_COUNT; zone++) {
+				u8 off = 25 + (zone * 3);
+				hp_kbd_base_colors[zone].red = state[off + 0];
+				hp_kbd_base_colors[zone].green = state[off + 1];
+				hp_kbd_base_colors[zone].blue = state[off + 2];
+				if (state[off + 0] || state[off + 1] || state[off + 2])
+					non_zero = true;
+			}
+		}
+		if (!non_zero) {
+			for (zone = 0; zone < FOURZONE_COUNT; zone++) {
+				hp_kbd_base_colors[zone].red = 255;
+				hp_kbd_base_colors[zone].green = 255;
+				hp_kbd_base_colors[zone].blue = 255;
+			}
+		}
+	}
+
+	if (led_classdev_register(&dev->dev, &hp_kbd_led) == 0) {
+		hp_kbd_led_registered = true;
+		if (device_create_file(hp_kbd_led.dev, &dev_attr_kbd_multi_intensity))
+			pr_warn("hp-wmi: failed to create multi_intensity attribute\n");
+		pr_info("Registered hp::kbd_backlight for KDE / UPower integration\n");
+	} else {
+		pr_warn("Failed to register hp::kbd_backlight\n");
+	}
 
 	return sysfs_create_group(&dev->dev.kobj, &zone_attribute_group);
 }
@@ -1839,6 +2168,13 @@ static void __exit hp_wmi_bios_remove(struct platform_device *device)
 		}
 	}
 
+	if (hp_kbd_led_registered) {
+		if (hp_kbd_led.dev)
+			device_remove_file(hp_kbd_led.dev, &dev_attr_kbd_multi_intensity);
+		led_classdev_unregister(&hp_kbd_led);
+		hp_kbd_led_registered = false;
+	}
+
 	for (i = 0; i < rfkill2_count; i++) {
 		rfkill_unregister(rfkill2[i].rfkill);
 		rfkill_destroy(rfkill2[i].rfkill);
@@ -1899,6 +2235,12 @@ static int hp_wmi_resume_handler(struct device *device)
 		rfkill_set_states(wwan_rfkill,
 				  hp_wmi_get_sw_state(HPWMI_WWAN),
 				  hp_wmi_get_hw_state(HPWMI_WWAN));
+
+	if (hp_kbd_led_registered) {
+		enum led_brightness b = hp_wmi_kbd_brightness_get(&hp_kbd_led);
+		hp_wmi_kbd_brightness_set(&hp_kbd_led, b);
+		led_classdev_notify_brightness_hw_changed(&hp_kbd_led, b);
+	}
 
 	return 0;
 }
