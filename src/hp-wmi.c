@@ -253,6 +253,8 @@ static struct input_dev *hp_wmi_input_dev;
 static struct platform_device *hp_wmi_platform_dev;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
 static struct platform_profile_handler platform_profile_handler;
+#else
+static struct device *platform_profile_device;
 #endif
 static bool platform_profile_support;
 static bool zero_insize_support;
@@ -1330,6 +1332,7 @@ static DEFINE_MUTEX(hp_kbd_lock);
 static struct attribute_group zone_attribute_group = {
 	.name = "rgb_zones",
 };
+static bool zone_group_registered;
 
 /*
  * Helpers used for zone control
@@ -2010,7 +2013,7 @@ static int fourzone_setup(struct platform_device *dev)
 
 		sysfs_attr_init(&zone_dev_attrs[zone].attr);
 		zone_dev_attrs[zone].attr.name = name;
-		zone_dev_attrs[zone].attr.mode = 0666;
+		zone_dev_attrs[zone].attr.mode = 0644;
 		zone_dev_attrs[zone].show = zone_show;
 		zone_dev_attrs[zone].store = zone_set;
 		zone_data[zone].offset = 25 + (zone * 3);
@@ -2063,28 +2066,28 @@ static int fourzone_setup(struct platform_device *dev)
 			/* Register RGB color attributes for OpenRGB */
 			sysfs_attr_init(&zone_data[zone].led_red_attr.attr);
 			zone_data[zone].led_red_attr.attr.name = "red";
-			zone_data[zone].led_red_attr.attr.mode = 0666;
+			zone_data[zone].led_red_attr.attr.mode = 0644;
 			zone_data[zone].led_red_attr.show = hp_wmi_led_red_show;
 			zone_data[zone].led_red_attr.store = hp_wmi_led_red_store;
 			device_create_file(zone_data[zone].led_cdev.dev, &zone_data[zone].led_red_attr);
 			
 			sysfs_attr_init(&zone_data[zone].led_green_attr.attr);
 			zone_data[zone].led_green_attr.attr.name = "green";
-			zone_data[zone].led_green_attr.attr.mode = 0666;
+			zone_data[zone].led_green_attr.attr.mode = 0644;
 			zone_data[zone].led_green_attr.show = hp_wmi_led_green_show;
 			zone_data[zone].led_green_attr.store = hp_wmi_led_green_store;
 			device_create_file(zone_data[zone].led_cdev.dev, &zone_data[zone].led_green_attr);
 			
 			sysfs_attr_init(&zone_data[zone].led_blue_attr.attr);
 			zone_data[zone].led_blue_attr.attr.name = "blue";
-			zone_data[zone].led_blue_attr.attr.mode = 0666;
+			zone_data[zone].led_blue_attr.attr.mode = 0644;
 			zone_data[zone].led_blue_attr.show = hp_wmi_led_blue_show;
 			zone_data[zone].led_blue_attr.store = hp_wmi_led_blue_store;
 			device_create_file(zone_data[zone].led_cdev.dev, &zone_data[zone].led_blue_attr);
 
 			sysfs_attr_init(&zone_data[zone].led_multi_intensity_attr.attr);
 			zone_data[zone].led_multi_intensity_attr.attr.name = "multi_intensity";
-			zone_data[zone].led_multi_intensity_attr.attr.mode = 0666;
+			zone_data[zone].led_multi_intensity_attr.attr.mode = 0644;
 			zone_data[zone].led_multi_intensity_attr.show = hp_wmi_zone_multi_intensity_show;
 			zone_data[zone].led_multi_intensity_attr.store = hp_wmi_zone_multi_intensity_store;
 			device_create_file(zone_data[zone].led_cdev.dev, &zone_data[zone].led_multi_intensity_attr);
@@ -2146,8 +2149,10 @@ static int fourzone_setup(struct platform_device *dev)
 	}
 
 	ret = sysfs_create_group(&dev->dev.kobj, &zone_attribute_group);
-	if (!ret)
+	if (!ret) {
+		zone_group_registered = true;
 		kobject_uevent(&dev->dev.kobj, KOBJ_CHANGE);
+	}
 	if (hp_kbd_led_registered && hp_kbd_led.dev)
 		kobject_uevent(&hp_kbd_led.dev->kobj, KOBJ_CHANGE);
 
@@ -2257,7 +2262,8 @@ static int thermal_profile_setup(void)
 	}
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
-	if (platform_profile_register(dev, "hp-wmi", NULL, ops) == NULL)
+	platform_profile_device = platform_profile_register(dev, "hp-wmi", NULL, ops);
+	if (IS_ERR_OR_NULL(platform_profile_device))
 		return -ENOMEM;
 #else
 	platform_profile_handler.name = "hp-wmi";
@@ -2312,9 +2318,12 @@ static void __exit hp_wmi_bios_remove(struct platform_device *device)
 	u8 zone;
 
 	/* Unregister LED class devices and sysfs group */
-	if (zone_data && quirks && quirks->fourzone) {
+	if (zone_group_registered) {
 		sysfs_remove_group(&device->dev.kobj, &zone_attribute_group);
+		zone_group_registered = false;
+	}
 
+	if (zone_data && quirks && quirks->fourzone) {
 		for (zone = 0; zone < actual_zone_count; zone++) {
 			if (zone_data[zone].led_registered) {
 				/* Remove RGB color attributes */
@@ -2371,10 +2380,14 @@ static void __exit hp_wmi_bios_remove(struct platform_device *device)
 
 	if (platform_profile_support) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
-		platform_profile_remove(&device->dev);
+		if (platform_profile_device && !IS_ERR(platform_profile_device)) {
+			platform_profile_remove(platform_profile_device);
+			platform_profile_device = NULL;
+		}
 #else
 		platform_profile_unregister();
 #endif
+		platform_profile_support = false;
 	}
 }
 
