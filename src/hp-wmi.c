@@ -1542,12 +1542,12 @@ static int hp_wmi_fourzone_brightness_get(void)
 		ret, state[0], state[1], state[2], state[3]);
 	if (ret)
 		return ret < 0 ? ret : -EINVAL;
-	return (state[0] & 0x80) ? 1 : 0;
+	return (state[0] != 0) ? 1 : 0;
 }
 
 static int hp_wmi_fourzone_brightness_set(int enable)
 {
-	u8 state[4] = { enable ? 0x80 : 0x00, 0, 0, 0 };
+	u8 state[4] = { enable ? 0x64 : 0x00, 0, 0, 0 };
 	int ret = hp_wmi_perform_query(HPWMI_FOURZONE_BRIGHT_SET, HPWMI_FOURZONE,
 				       state, sizeof(state), 0);
 	pr_debug("hp_wmi: fourzone_brightness_set enable=%d ret=%d\n", enable, ret);
@@ -1923,6 +1923,7 @@ static ssize_t hp_wmi_zone_multi_intensity_store(struct device *dev,
 
 static int fourzone_setup(struct platform_device *dev)
 {
+	int ret;
 	u8 zone;
 	char buffer[10];
 	char led_buffer[20];  /* Separate buffer for LED names */
@@ -2009,7 +2010,7 @@ static int fourzone_setup(struct platform_device *dev)
 
 		sysfs_attr_init(&zone_dev_attrs[zone].attr);
 		zone_dev_attrs[zone].attr.name = name;
-		zone_dev_attrs[zone].attr.mode = 0644;
+		zone_dev_attrs[zone].attr.mode = 0666;
 		zone_dev_attrs[zone].show = zone_show;
 		zone_dev_attrs[zone].store = zone_set;
 		zone_data[zone].offset = 25 + (zone * 3);
@@ -2062,28 +2063,28 @@ static int fourzone_setup(struct platform_device *dev)
 			/* Register RGB color attributes for OpenRGB */
 			sysfs_attr_init(&zone_data[zone].led_red_attr.attr);
 			zone_data[zone].led_red_attr.attr.name = "red";
-			zone_data[zone].led_red_attr.attr.mode = 0644;
+			zone_data[zone].led_red_attr.attr.mode = 0666;
 			zone_data[zone].led_red_attr.show = hp_wmi_led_red_show;
 			zone_data[zone].led_red_attr.store = hp_wmi_led_red_store;
 			device_create_file(zone_data[zone].led_cdev.dev, &zone_data[zone].led_red_attr);
 			
 			sysfs_attr_init(&zone_data[zone].led_green_attr.attr);
 			zone_data[zone].led_green_attr.attr.name = "green";
-			zone_data[zone].led_green_attr.attr.mode = 0644;
+			zone_data[zone].led_green_attr.attr.mode = 0666;
 			zone_data[zone].led_green_attr.show = hp_wmi_led_green_show;
 			zone_data[zone].led_green_attr.store = hp_wmi_led_green_store;
 			device_create_file(zone_data[zone].led_cdev.dev, &zone_data[zone].led_green_attr);
 			
 			sysfs_attr_init(&zone_data[zone].led_blue_attr.attr);
 			zone_data[zone].led_blue_attr.attr.name = "blue";
-			zone_data[zone].led_blue_attr.attr.mode = 0644;
+			zone_data[zone].led_blue_attr.attr.mode = 0666;
 			zone_data[zone].led_blue_attr.show = hp_wmi_led_blue_show;
 			zone_data[zone].led_blue_attr.store = hp_wmi_led_blue_store;
 			device_create_file(zone_data[zone].led_cdev.dev, &zone_data[zone].led_blue_attr);
 
 			sysfs_attr_init(&zone_data[zone].led_multi_intensity_attr.attr);
 			zone_data[zone].led_multi_intensity_attr.attr.name = "multi_intensity";
-			zone_data[zone].led_multi_intensity_attr.attr.mode = 0644;
+			zone_data[zone].led_multi_intensity_attr.attr.mode = 0666;
 			zone_data[zone].led_multi_intensity_attr.show = hp_wmi_zone_multi_intensity_show;
 			zone_data[zone].led_multi_intensity_attr.store = hp_wmi_zone_multi_intensity_store;
 			device_create_file(zone_data[zone].led_cdev.dev, &zone_data[zone].led_multi_intensity_attr);
@@ -2127,6 +2128,12 @@ static int fourzone_setup(struct platform_device *dev)
 				hp_kbd_base_colors[zone].blue = 255;
 			}
 		}
+		for (zone = 0; zone < actual_zone_count; zone++) {
+			zone_data[zone].colors = hp_kbd_base_colors[zone];
+		}
+		if (actual_zone_count > 0)
+			fourzone_update_led(&zone_data[0], HPWMI_WRITE);
+		hp_wmi_fourzone_brightness_set(1);
 	}
 
 	if (led_classdev_register(&dev->dev, &hp_kbd_led) == 0) {
@@ -2138,7 +2145,13 @@ static int fourzone_setup(struct platform_device *dev)
 		pr_warn("Failed to register hp::kbd_backlight\n");
 	}
 
-	return sysfs_create_group(&dev->dev.kobj, &zone_attribute_group);
+	ret = sysfs_create_group(&dev->dev.kobj, &zone_attribute_group);
+	if (!ret)
+		kobject_uevent(&dev->dev.kobj, KOBJ_CHANGE);
+	if (hp_kbd_led_registered && hp_kbd_led.dev)
+		kobject_uevent(&hp_kbd_led.dev->kobj, KOBJ_CHANGE);
+
+	return ret;
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
