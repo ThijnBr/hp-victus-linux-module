@@ -1645,6 +1645,20 @@ static int hp_wmi_kbd_brightness_set(struct led_classdev *led_cdev,
 			hp_kbd_base_colors[i].green = 255;
 			hp_kbd_base_colors[i].blue = 255;
 		}
+	} else {
+		for (i = 0; i < FOURZONE_COUNT; i++) {
+			if (!hp_kbd_base_colors[i].red &&
+			    !hp_kbd_base_colors[i].green &&
+			    !hp_kbd_base_colors[i].blue) {
+				if (hp_kbd_base_colors[0].red || hp_kbd_base_colors[0].green || hp_kbd_base_colors[0].blue) {
+					hp_kbd_base_colors[i] = hp_kbd_base_colors[0];
+				} else {
+					hp_kbd_base_colors[i].red = 255;
+					hp_kbd_base_colors[i].green = 255;
+					hp_kbd_base_colors[i].blue = 255;
+				}
+			}
+		}
 	}
 
 	for (i = 0; i < FOURZONE_COUNT; i++) {
