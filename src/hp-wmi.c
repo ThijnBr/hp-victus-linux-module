@@ -1308,6 +1308,7 @@ struct platform_zone {
 	struct device_attribute led_red_attr;
 	struct device_attribute led_green_attr;
 	struct device_attribute led_blue_attr;
+	struct device_attribute led_multi_intensity_attr;
 };
 
 static struct device_attribute *zone_dev_attrs;
@@ -1844,6 +1845,49 @@ static ssize_t hp_wmi_led_blue_store(struct device *dev, struct device_attribute
 	return ret ? ret : count;
 }
 
+static ssize_t hp_wmi_zone_multi_intensity_show(struct device *dev,
+						struct device_attribute *attr, char *buf)
+{
+	struct platform_zone *zone = container_of(attr, struct platform_zone, led_multi_intensity_attr);
+	int ret = fourzone_update_led(zone, HPWMI_READ);
+	if (ret)
+		return sprintf(buf, "0 0 0\n");
+	return sprintf(buf, "%d %d %d\n", zone->colors.red, zone->colors.green, zone->colors.blue);
+}
+
+static ssize_t hp_wmi_zone_multi_intensity_store(struct device *dev,
+						 struct device_attribute *attr,
+						 const char *buf, size_t count)
+{
+	struct platform_zone *zone = container_of(attr, struct platform_zone, led_multi_intensity_attr);
+	unsigned int r, g, b;
+	int ret, idx;
+
+	if (sscanf(buf, "%u %u %u", &r, &g, &b) != 3 &&
+	    sscanf(buf, "%u,%u,%u", &r, &g, &b) != 3)
+		return -EINVAL;
+
+	if (r > 255 || g > 255 || b > 255)
+		return -EINVAL;
+
+	zone->colors.red = (u8)r;
+	zone->colors.green = (u8)g;
+	zone->colors.blue = (u8)b;
+
+	idx = (zone->offset - 25) / 3;
+	if (idx >= 0 && idx < FOURZONE_COUNT) {
+		hp_kbd_base_colors[idx].red = (u8)r;
+		hp_kbd_base_colors[idx].green = (u8)g;
+		hp_kbd_base_colors[idx].blue = (u8)b;
+	}
+
+	ret = fourzone_update_led(zone, HPWMI_WRITE);
+	if (!ret && (r || g || b))
+		hp_wmi_fourzone_brightness_set(1);
+
+	return ret ? ret : count;
+}
+
 static int fourzone_setup(struct platform_device *dev)
 {
 	u8 zone;
@@ -1912,6 +1956,12 @@ static int fourzone_setup(struct platform_device *dev)
 			while (zone > 0) {
 				zone--;
 				if (zone_data[zone].led_registered) {
+					if (zone_data[zone].led_cdev.dev) {
+						device_remove_file(zone_data[zone].led_cdev.dev, &zone_data[zone].led_red_attr);
+						device_remove_file(zone_data[zone].led_cdev.dev, &zone_data[zone].led_green_attr);
+						device_remove_file(zone_data[zone].led_cdev.dev, &zone_data[zone].led_blue_attr);
+						device_remove_file(zone_data[zone].led_cdev.dev, &zone_data[zone].led_multi_intensity_attr);
+					}
 					led_classdev_unregister(&zone_data[zone].led_cdev);
 					zone_data[zone].led_registered = false;
 				}
@@ -1952,6 +2002,13 @@ static int fourzone_setup(struct platform_device *dev)
 			zone_data[zone].led_blue_attr.show = hp_wmi_led_blue_show;
 			zone_data[zone].led_blue_attr.store = hp_wmi_led_blue_store;
 			device_create_file(zone_data[zone].led_cdev.dev, &zone_data[zone].led_blue_attr);
+
+			sysfs_attr_init(&zone_data[zone].led_multi_intensity_attr.attr);
+			zone_data[zone].led_multi_intensity_attr.attr.name = "multi_intensity";
+			zone_data[zone].led_multi_intensity_attr.attr.mode = 0644;
+			zone_data[zone].led_multi_intensity_attr.show = hp_wmi_zone_multi_intensity_show;
+			zone_data[zone].led_multi_intensity_attr.store = hp_wmi_zone_multi_intensity_store;
+			device_create_file(zone_data[zone].led_cdev.dev, &zone_data[zone].led_multi_intensity_attr);
 		} else {
 			pr_warn("Failed to register LED device for zone %d\n", zone);
 			kfree(zone_data[zone].led_cdev.name);
@@ -2171,6 +2228,7 @@ static void __exit hp_wmi_bios_remove(struct platform_device *device)
 					device_remove_file(zone_data[zone].led_cdev.dev, &zone_data[zone].led_red_attr);
 					device_remove_file(zone_data[zone].led_cdev.dev, &zone_data[zone].led_green_attr);
 					device_remove_file(zone_data[zone].led_cdev.dev, &zone_data[zone].led_blue_attr);
+					device_remove_file(zone_data[zone].led_cdev.dev, &zone_data[zone].led_multi_intensity_attr);
 				}
 				led_classdev_unregister(&zone_data[zone].led_cdev);
 				zone_data[zone].led_registered = false;

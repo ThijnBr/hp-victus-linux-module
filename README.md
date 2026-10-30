@@ -127,6 +127,79 @@ sudo ./hp_victus_rgb_gui.py
 
 ---
 
+## OpenRGB Integration
+
+The module is fully compatible with [OpenRGB](https://openrgb.org) using its native `LinuxLEDController` subsystem. Both master keyboard control (all zones synchronized) and independent 4-zone per-key/zone control are supported without requiring OpenRGB to run as root.
+
+### 1. Automated OpenRGB Setup
+
+Run the included setup script:
+
+```bash
+./openrgb/setup-openrgb.sh
+```
+
+This script:
+1. Installs the udev rule (`/etc/udev/rules.d/99-hp-victus-rgb.rules`) so normal users have read/write access to the sysfs LED and RGB attributes.
+2. Configures `~/.config/OpenRGB/OpenRGB.json` with the master keyboard backlight device and all 4 individual zones.
+
+### 2. Manual Configuration
+
+If configuring manually, add the following to `~/.config/OpenRGB/OpenRGB.json`:
+
+```json
+{
+    "LinuxLEDDevices": {
+        "devices": [
+            {
+                "name": "HP Victus Keyboard (All Zones)",
+                "rgb_path": "/sys/class/leds/hp::kbd_backlight/"
+            },
+            {
+                "name": "HP Victus Zone 1 (Left)",
+                "rgb_path": "/sys/class/leds/hp-wmi::zone00/"
+            },
+            {
+                "name": "HP Victus Zone 2 (Center-Left)",
+                "rgb_path": "/sys/class/leds/hp-wmi::zone01/"
+            },
+            {
+                "name": "HP Victus Zone 3 (Center-Right)",
+                "rgb_path": "/sys/class/leds/hp-wmi::zone02/"
+            },
+            {
+                "name": "HP Victus Zone 4 (Right)",
+                "rgb_path": "/sys/class/leds/hp-wmi::zone03/"
+            }
+        ]
+    }
+}
+```
+
+### 3. OpenRGB CLI Examples
+
+List detected devices:
+```bash
+openrgb --noautoconnect -l
+```
+
+Set color across all zones:
+```bash
+openrgb --noautoconnect --device "HP Victus Keyboard (All Zones)" --color 00FFFF
+```
+
+Set individual zone colors:
+```bash
+openrgb --noautoconnect \
+  --device "HP Victus Zone 1 (Left)" --color FF0000 \
+  --device "HP Victus Zone 2 (Center-Left)" --color 00FF00 \
+  --device "HP Victus Zone 3 (Center-Right)" --color 0000FF \
+  --device "HP Victus Zone 4 (Right)" --color FFFF00
+```
+
+
+---
+
 ## Uninstallation
 
 To remove the module and restore the default in-tree driver:
